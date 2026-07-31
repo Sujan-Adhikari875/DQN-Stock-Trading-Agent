@@ -50,52 +50,55 @@ class Agent():
                     frame_bound=(50, 500),
                     window_size=10, render_mode="human" if render else None)
         if render:
-            env.unwrapped.metadata["render_fps"] = 5
+            env.unwrapped.metadata["render_fps"] = 5 # Reduce rendering speed
         
         num_states =  env.observation_space.shape[0] * env.observation_space.shape[1]
         num_actions = env.action_space.n
 
-        policy_dqn = DQN(num_states, num_actions).to(device)
+        policy_dqn = DQN(num_states, num_actions).to(device) # Main network used to choose actions
 
         if is_training:
-            memory = ReplayMemory(self.replay_memory_size)
+            memory = ReplayMemory(self.replay_memory_size) # Store previous experiences
             epsilon = self.epsilon_init
 
-            target_dqn = DQN(num_states, num_actions).to(device)
+            target_dqn = DQN(num_states, num_actions).to(device) # Stable network used to calculate targets
 
-            target_dqn.load_state_dict(policy_dqn.state_dict())
+            target_dqn.load_state_dict(policy_dqn.state_dict()) # Copy policy network weights
+            target_dqn.eval()
 
             steps = 0
             best_rewards = float("-inf")
 
             self.optimizer = optim.Adam(policy_dqn.parameters(), lr = self.alpha)
         else:
-            policy_dqn.load_state_dict(torch.load(self.MODEL_FILE))
+            policy_dqn.load_state_dict(torch.load(self.MODEL_FILE, map_location=device)) # Load model on available device
             policy_dqn.eval()
 
-        for episode in itertools.count():
+        num_episodes = 500 if is_training else 1 # Train multiple episodes but test only once
+
+        for episode in range(num_episodes):
             state, info = env.reset()
 
 # Handle nested observation returned by some wrapper/version
             if isinstance(state, tuple):
                 state = state[0]
 
-            state = torch.as_tensor(np.asarray(state, dtype=np.float32)).flatten().to(device)  
+            state = torch.as_tensor(np.asarray(state, dtype=np.float32)).flatten().to(device) # Convert state to tensor
 
             done = False 
             total_reward = 0
 
-            while (not done and total_reward < self.reward_threshold):
+            while not done: # Continue until the environment finishes
                 if is_training and random.random() < epsilon:
                     action = env.action_space.sample()
                     action = torch.tensor(action, dtype=torch.long, device=device)
                 else:
                     with torch.no_grad():
-                        action = policy_dqn(state.unsqueeze(dim=0)).squeeze().argmax()
+                        action = policy_dqn(state.unsqueeze(dim=0)).squeeze().argmax() # Choose action with highest Q-value
 
                 next_state, reward, terminated, truncated, info = env.step(action.item())
 
-                done = terminated or truncated
+                done = terminated or truncated # Episode ends when terminated or truncated
                 if isinstance(next_state, tuple):
                     next_state = next_state[0]
 
@@ -103,7 +106,7 @@ class Agent():
                 reward_tensor = torch.tensor(reward, dtype=torch.float32, device=device)
 
                 if is_training:
-                    memory.append((state, action, next_state_tensor, reward_tensor, done))
+                    memory.append((state.cpu(), action.cpu(), next_state_tensor.cpu(), reward_tensor.cpu(), done)) # Store experience on CPU
 
                     steps += 1
 
@@ -111,12 +114,12 @@ class Agent():
 
                     if  len(memory) >= self.mini_batch_size:
                         # get sample
-                        mini_batch =memory.sample(self.mini_batch_size)
+                        mini_batch =memory.sample(self.mini_batch_size) # Random experience batch
 
-                        self.optimize(mini_batch, policy_dqn, target_dqn)
+                        self.optimize(mini_batch, policy_dqn, target_dqn) # Train policy network
 
                     if steps >= self.network_sync_rate:
-                        target_dqn.load_state_dict(policy_dqn.state_dict())
+                        target_dqn.load_state_dict(policy_dqn.state_dict()) # Synchronize target network
                         steps = 0
 
                 state = next_state_tensor
@@ -131,14 +134,17 @@ class Agent():
                 with open(self.LOGFILE, "a") as f:
                     f.write(log_msg + "\n")
 
-                torch.save(policy_dqn.state_dict(), self.MODEL_FILE)
+                torch.save(policy_dqn.state_dict(), self.MODEL_FILE) # Save best model
 
                 best_rewards = total_reward
 
             if is_training:
-                    epsilon = max(self.epsilon_min, epsilon * self.epsilon_decay)
+                    epsilon = max(self.epsilon_min, epsilon * self.epsilon_decay) # Reduce exploration
 
-        # env.close()
+            if is_training and total_reward >= self.reward_threshold:
+                break
+
+        env.close()
 
     def optimize(self, mini_batch, policy_dqn, target_dqn):
         states, actions, next_states, rewards, done = zip(*mini_batch)
@@ -153,17 +159,17 @@ class Agent():
 
         done = torch.tensor(done, dtype=torch.bool, device=device)
 
-        current_q = policy_dqn(states).gather(1, actions.unsqueeze(1)).squeeze(1)
+        current_q = policy_dqn(states).gather(1, actions.unsqueeze(1)).squeeze(1) # Q-values of selected actions
 
         with torch.no_grad():
             next_q = target_dqn(next_states).max(dim=1).values
-            target_q = rewards + self.gamma * next_q * (~done).float()
+            target_q = rewards + self.gamma * next_q * (~done).float() # Bellman target value
 
-        loss = self.loss_fn(current_q, target_q)
+        loss = self.loss_fn(current_q, target_q) # Difference between predicted and target Q-values
 
         self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        loss.backward() # Calculate gradients
+        self.optimizer.step() # Update policy network
           
 
 if __name__ == "__main__":
