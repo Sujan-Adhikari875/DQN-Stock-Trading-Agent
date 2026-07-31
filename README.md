@@ -313,7 +313,7 @@ with open(self.LOGFILE, "a") as f:
 Run the following command:
 
 ```bash
-python agent.py stocks1 --train
+python agent.py stocks-v0 --train
 ```
 
 `stocks1` must match a configuration name inside `parameters.yaml`.
@@ -321,16 +321,18 @@ python agent.py stocks1 --train
 Example:
 
 ```yaml
-stocks1:
-  epsilon_init: 1.0
+stocks-v0:
+  env_id: stocks-v0
+  epsilon_init: 1
   epsilon_min: 0.05
-  epsilon_decay: 0.995
+  epsilon_decay: 0.9995
+  replay_memory_size: 10000
+  mini_batch_size: 32
+  network_sync_rate: 10
   alpha: 0.001
   gamma: 0.99
-  reward_threshold: 100000
-  replay_memory_size: 10000
-  mini_batch_size: 64
-  network_sync_rate: 1000
+  reward_threshold: 1000
+
 ```
 
 ## Testing
@@ -338,7 +340,7 @@ stocks1:
 Run the trained model using:
 
 ```bash
-python agent.py stocks1
+python agent.py stocks-v0
 ```
 
 During testing, the saved model is loaded:
@@ -346,8 +348,7 @@ During testing, the saved model is loaded:
 ```python
 policy_dqn.load_state_dict(
     torch.load(
-        self.MODEL_FILE,
-        map_location=device
+        self.MODEL_FILE
     )
 )
 
