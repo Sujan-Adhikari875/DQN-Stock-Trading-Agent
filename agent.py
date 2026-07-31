@@ -141,32 +141,23 @@ class Agent():
         # env.close()
 
     def optimize(self, mini_batch, policy_dqn, target_dqn):
-        states, actions, next_states, rewards, dones = zip(*mini_batch)
+        states, actions, next_states, rewards, done = zip(*mini_batch)
 
         states = torch.stack(states).to(device)
         next_states = torch.stack(next_states).to(device)
 
-        actions = torch.tensor(
-            [action.item() if torch.is_tensor(action) else action for action in actions],
-            dtype=torch.long,
-            device=device
-        )
+        actions = torch.tensor([action.item() if torch.is_tensor(action) else action for action in actions],
+                               dtype=torch.long,device=device)
 
         rewards = torch.stack(rewards).to(device)
 
-        dones = torch.tensor(
-            dones,
-            dtype=torch.bool,
-            device=device
-        )
+        done = torch.tensor(done, dtype=torch.bool, device=device)
 
-        current_q = policy_dqn(states).gather(
-            1, actions.unsqueeze(1)
-        ).squeeze(1)
+        current_q = policy_dqn(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
             next_q = target_dqn(next_states).max(dim=1).values
-            target_q = rewards + self.gamma * next_q * (~dones).float()
+            target_q = rewards + self.gamma * next_q * (~done).float()
 
         loss = self.loss_fn(current_q, target_q)
 
