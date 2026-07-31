@@ -2,7 +2,7 @@
 
 This project implements a **Deep Q-Network (DQN)** agent for stock trading using **PyTorch**, **Gymnasium**, and **Gym-AnyTrading**.
 
-The agent interacts with a stock-trading environment and learns whether to perform a **Buy** or **Sell** action. It improves its decisions through rewards received from the environment.
+The agent interacts with the `stocks-v0` environment and learns whether to perform a **Buy** or **Sell** action. It improves its decisions by receiving rewards from the environment and training on previously stored experiences.
 
 The project uses important DQN techniques such as:
 
@@ -20,42 +20,52 @@ The project uses important DQN techniques such as:
 ├── experience_replay.py
 ├── parameters.yaml
 ├── runs/
-│   ├── stocks1.pt
-│   └── stocks1.log
+│   ├── stocks-v0.pt
+│   └── stocks-v0.log
 └── README.md
 ```
 
-* `agent.py` contains the training and testing process.
-* `dqn.py` contains the neural-network model.
-* `experience_replay.py` stores previous experiences.
-* `parameters.yaml` contains the training hyperparameters.
-* `runs/` stores trained models and log files.
+* `agent.py` contains the training, testing, and optimization process.
+* `dqn.py` contains the neural-network architecture.
+* `experience_replay.py` contains the replay-memory implementation.
+* `parameters.yaml` contains the DQN hyperparameters.
+* `runs/` stores trained models and training logs.
 
 ## Installation
 
 Install the required libraries:
 
 ```bash
-pip install torch gymnasium gym-anytrading numpy pyyaml
+pip install torch gymnasium gym-anytrading numpy pyyaml pygame
 ```
 
-## Stock Environment
+## Stock Trading Environment
 
-The stock environment is created using:
+The environment is created using:
 
 ```python
 env = gym.make(
     "stocks-v0",
     frame_bound=(50, 500),
-    window_size=10
+    window_size=10,
+    render_mode="human" if render else None
 )
 ```
 
-`frame_bound` defines the section of stock data used by the environment.
+### Environment settings
 
-`window_size=10` means the agent observes information from the previous 10 time steps before selecting an action.
+* `stocks-v0` is the stock-trading environment.
+* `frame_bound=(50, 500)` defines the section of stock data used.
+* `window_size=10` means the agent observes the previous 10 time steps.
+* `render_mode="human"` displays the trading environment during testing.
 
-The environment normally provides two actions:
+When rendering is enabled, the frame rate is set using:
+
+```python
+env.unwrapped.metadata["render_fps"] = 3
+```
+
+The environment provides two possible actions:
 
 ```text
 0 = Sell
@@ -64,7 +74,7 @@ The environment normally provides two actions:
 
 ## State Preparation
 
-The observation returned by the environment is usually a two-dimensional array. It is flattened before being passed into the neural network:
+The observation returned by the environment is converted into a NumPy array, transformed into a PyTorch tensor, and flattened:
 
 ```python
 state = torch.as_tensor(
@@ -72,7 +82,7 @@ state = torch.as_tensor(
 ).flatten().to(device)
 ```
 
-Flattening converts the observation into a one-dimensional input vector.
+Flattening converts the two-dimensional observation into a one-dimensional input vector for the neural network.
 
 The number of input states is calculated using:
 
@@ -83,9 +93,18 @@ num_states = (
 )
 ```
 
+The code also handles cases where an environment wrapper returns a nested observation:
+
+```python
+if isinstance(state, tuple):
+    state = state[0]
+```
+
+The same check is applied to `next_state`.
+
 ## Device Selection
 
-The code automatically selects the best available device:
+The program automatically selects the best available device:
 
 ```python
 if torch.backends.mps.is_available():
@@ -96,13 +115,13 @@ else:
     device = "cpu"
 ```
 
-* `mps` is used for supported Apple devices.
-* `cuda` is used for NVIDIA GPUs.
+* `mps` is used on supported Apple devices.
+* `cuda` is used with supported NVIDIA GPUs.
 * `cpu` is used when GPU acceleration is unavailable.
 
 ## Policy Network
 
-The policy network predicts a Q-value for every possible action:
+The policy network predicts a Q-value for each possible action:
 
 ```python
 policy_dqn = DQN(
@@ -111,41 +130,46 @@ policy_dqn = DQN(
 ).to(device)
 ```
 
-For example, the network may produce:
+The network output represents:
 
 ```text
 [Q-value for Sell, Q-value for Buy]
 ```
 
-The action with the highest Q-value is selected:
+During exploitation, the action with the highest Q-value is selected:
 
 ```python
 with torch.no_grad():
     action = policy_dqn(
-        state.unsqueeze(0)
+        state.unsqueeze(dim=0)
     ).squeeze().argmax()
 ```
 
-`unsqueeze(0)` adds the batch dimension required by the neural network.
+`unsqueeze(dim=0)` adds the batch dimension required by the neural network.
 
 ## Epsilon-Greedy Exploration
 
-During training, the agent must balance exploration and exploitation.
+During training, the agent balances exploration and exploitation.
 
 ```python
 if is_training and random.random() < epsilon:
     action = env.action_space.sample()
+    action = torch.tensor(
+        action,
+        dtype=torch.long,
+        device=device
+    )
 else:
     with torch.no_grad():
         action = policy_dqn(
-            state.unsqueeze(0)
+            state.unsqueeze(dim=0)
         ).squeeze().argmax()
 ```
 
-* Exploration selects a random action.
-* Exploitation selects the action with the highest predicted Q-value.
+* **Exploration:** selects a random action.
+* **Exploitation:** selects the action with the highest predicted Q-value.
 
-At the beginning, epsilon is high, so the agent explores more. After every episode, epsilon decreases:
+After every episode, epsilon is reduced:
 
 ```python
 epsilon = max(
@@ -154,11 +178,11 @@ epsilon = max(
 )
 ```
 
-This allows the agent to gradually use more of its learned knowledge.
+This allows the agent to explore more at the beginning and gradually depend on its learned policy.
 
 ## Experience Replay
 
-Each interaction is stored as an experience:
+Each interaction is stored in replay memory:
 
 ```python
 memory.append(
@@ -182,15 +206,22 @@ Reward
 Episode completion status
 ```
 
-When enough experiences are available, the agent randomly samples a mini-batch:
+Once the replay memory contains enough experiences, a random mini-batch is sampled:
 
 ```python
-mini_batch = memory.sample(
-    self.mini_batch_size
-)
+if len(memory) >= self.mini_batch_size:
+    mini_batch = memory.sample(
+        self.mini_batch_size
+    )
+
+    self.optimize(
+        mini_batch,
+        policy_dqn,
+        target_dqn
+    )
 ```
 
-Random sampling reduces the correlation between consecutive stock observations and makes training more stable.
+Random sampling reduces correlation between consecutive stock observations and improves training stability.
 
 ## Target Network
 
@@ -199,7 +230,7 @@ DQN uses two neural networks:
 * Policy network
 * Target network
 
-The target network starts with the same weights as the policy network:
+The target network is initialized with the policy-network weights:
 
 ```python
 target_dqn.load_state_dict(
@@ -207,7 +238,7 @@ target_dqn.load_state_dict(
 )
 ```
 
-After a fixed number of steps, the target network is updated:
+After a fixed number of environment steps, the target network is synchronized:
 
 ```python
 if steps >= self.network_sync_rate:
@@ -217,11 +248,11 @@ if steps >= self.network_sync_rate:
     steps = 0
 ```
 
-The target network provides more stable target Q-values because it is not updated after every training step.
+The target network helps reduce instability because its parameters are not updated during every optimization step.
 
 ## Q-Value Calculation
 
-The Q-values for the selected actions are obtained using:
+The predicted Q-values for the selected actions are calculated using:
 
 ```python
 current_q = policy_dqn(states).gather(
@@ -230,7 +261,7 @@ current_q = policy_dqn(states).gather(
 ).squeeze(1)
 ```
 
-The target Q-value is calculated using the Bellman equation:
+The target Q-values are calculated using the target network:
 
 ```python
 with torch.no_grad():
@@ -241,17 +272,17 @@ with torch.no_grad():
     target_q = rewards + (
         self.gamma
         * next_q
-        * (~dones).float()
+        * (~done).float()
     )
 ```
 
-The main equation is:
+The Bellman equation used is:
 
 ```text
 Target Q = Reward + Gamma × Maximum Next Q
 ```
 
-When the episode is finished, the future reward is removed using:
+For terminal states, the future Q-value is removed using:
 
 ```python
 (~dones).float()
@@ -259,7 +290,7 @@ When the episode is finished, the future reward is removed using:
 
 ## Network Optimization
 
-The difference between the predicted Q-value and target Q-value is calculated using Mean Squared Error:
+The difference between the current Q-value and target Q-value is calculated using Mean Squared Error:
 
 ```python
 loss = self.loss_fn(
@@ -276,7 +307,7 @@ loss.backward()
 self.optimizer.step()
 ```
 
-The Adam optimizer is created using:
+The Adam optimizer is initialized with:
 
 ```python
 self.optimizer = optim.Adam(
@@ -287,10 +318,10 @@ self.optimizer = optim.Adam(
 
 ## Model Saving
 
-The model is saved whenever the agent achieves a better total reward:
+The model is saved whenever the agent achieves a better episode reward:
 
 ```python
-if total_reward > best_rewards:
+if is_training and total_reward > best_rewards:
     torch.save(
         policy_dqn.state_dict(),
         self.MODEL_FILE
@@ -301,39 +332,73 @@ if total_reward > best_rewards:
 
 The saved model is stored inside the `runs/` directory.
 
-The training result is also written to a log file:
+Training information is also written to a log file:
 
 ```python
 with open(self.LOGFILE, "a") as f:
     f.write(log_msg + "\n")
 ```
 
-## Training
+For the `stocks-v0` parameter set, the output files are:
 
-Run the following command:
-
-```bash
-python agent.py stocks-v0 --train
+```text
+runs/stocks-v0.pt
+runs/stocks-v0.log
 ```
 
-`stocks1` must match a configuration name inside `parameters.yaml`.
+## Hyperparameters
+
+The training configuration is loaded from `parameters.yaml`.
 
 Example:
 
 ```yaml
 stocks-v0:
-  env_id: stocks-v0
-  epsilon_init: 1
+  epsilon_init: 1.0
   epsilon_min: 0.05
   epsilon_decay: 0.9995
-  replay_memory_size: 10000
-  mini_batch_size: 32
-  network_sync_rate: 10
   alpha: 0.001
   gamma: 0.99
   reward_threshold: 1000
-
+  replay_memory_size: 10000
+  mini_batch_size: 32
+  network_sync_rate: 10
 ```
+
+### Hyperparameter descriptions
+
+* `epsilon_init` – Initial exploration rate.
+* `epsilon_min` – Minimum exploration rate.
+* `epsilon_decay` – Controls how quickly exploration decreases.
+* `alpha` – Learning rate for the Adam optimizer.
+* `gamma` – Discount factor for future rewards.
+* `reward_threshold` – Stops the current episode loop if the total reward reaches this value.
+* `replay_memory_size` – Maximum number of experiences stored.
+* `mini_batch_size` – Number of experiences used in one optimization step.
+* `network_sync_rate` – Number of steps before updating the target network.
+
+The `env_id` parameter is not required because the current code directly creates the `"stocks-v0"` environment.
+
+## Training
+
+Train the agent using:
+
+```bash
+python agent.py stocks-v0 --train
+```
+
+The value `stocks-v0` is the hyperparameter configuration name inside `parameters.yaml`.
+
+During training, the program:
+
+1. Creates the policy and target networks.
+2. Initializes replay memory.
+3. Selects actions using epsilon-greedy exploration.
+4. Stores experiences in replay memory.
+5. Samples mini-batches.
+6. Optimizes the policy network.
+7. Synchronizes the target network.
+8. Saves the best-performing model.
 
 ## Testing
 
@@ -347,33 +412,53 @@ During testing, the saved model is loaded:
 
 ```python
 policy_dqn.load_state_dict(
-    torch.load(
-        self.MODEL_FILE
-    )
+    torch.load(self.MODEL_FILE)
 )
 
 policy_dqn.eval()
 ```
 
-Using `map_location=device` is recommended because the model may have been trained on a different device.
+Testing automatically enables rendering:
+
+```python
+dql.runs(
+    is_training=False,
+    render=True
+)
+```
+
+For better compatibility between CPU and GPU devices, the model-loading line can be changed to:
+
+```python
+policy_dqn.load_state_dict(
+    torch.load(
+        self.MODEL_FILE,
+        map_location=device
+    )
+)
+```
 
 ## Training Flow
 
-The complete learning process is:
+The complete DQN training process is:
 
 1. Reset the stock environment.
-2. Convert the observation into a tensor.
+2. Convert and flatten the observation.
 3. Select a random or predicted action.
 4. Execute the action in the environment.
 5. Receive the next state and reward.
-6. Store the experience in replay memory.
-7. Sample a mini-batch from memory.
-8. Calculate current and target Q-values.
-9. Update the policy network.
-10. Periodically synchronize the target network.
-11. Save the model when the reward improves.
+6. Check whether the episode has terminated or been truncated.
+7. Store the transition in replay memory.
+8. Sample a mini-batch.
+9. Calculate the current and target Q-values.
+10. Update the policy network.
+11. Periodically synchronize the target network.
+12. Save the model when the reward improves.
+13. Reduce epsilon after every episode.
 
-## Important Note
+## Important Notes
+
+### Unlimited training episodes
 
 The current training loop uses:
 
@@ -383,10 +468,28 @@ for episode in itertools.count():
 
 This creates an unlimited number of episodes. Training continues until the program is manually stopped.
 
-For a fixed number of episodes, it can be replaced with:
+To train for a fixed number of episodes, replace it with:
 
 ```python
 for episode in range(500):
 ```
 
-This will stop training after 500 episodes.
+### Episode completion
+
+An episode is considered complete when it is terminated or truncated:
+
+```python
+done = terminated or truncated
+```
+
+This follows the current Gymnasium API.
+
+### Model file requirement
+
+Testing requires an existing trained model:
+
+```text
+runs/stocks-v0.pt
+```
+
+Therefore, the training command must be run before the testing command.
