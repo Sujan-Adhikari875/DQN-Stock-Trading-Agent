@@ -50,7 +50,7 @@ class Agent():
                     frame_bound=(50, 500),
                     window_size=10, render_mode="human" if render else None)
         if render:
-            env.unwrapped.metadata["render_fps"] = 5 # Reduce rendering speed
+            env.unwrapped.metadata["render_fps"] = 3 # Reduce rendering speed
         
         num_states =  env.observation_space.shape[0] * env.observation_space.shape[1]
         num_actions = env.action_space.n
