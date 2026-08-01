@@ -2,18 +2,16 @@ import torch
 import torch.nn as nn
 
 class DQN(nn.Module):
-    def __init__(self, state_dim=12, action_dim=3):
+    def __init__(self, num_states, num_actions):
         super(DQN, self).__init__()
-        self.model = nn.Sequential(
-            nn.Linear(state_dim, 128),
+        # Simple Feed Forward Network
+        self.network = nn.Sequential(
+            nn.Linear(num_states, 128),
             nn.ReLU(),
-
             nn.Linear(128, 128),
             nn.ReLU(),
-
-            nn.Linear(128, action_dim)
-
+            nn.Linear(128, num_actions)
         )
 
     def forward(self, x):
-        return self.model(x)
+        return self.network(x)
